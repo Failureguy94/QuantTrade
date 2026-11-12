@@ -1,5 +1,7 @@
 # Quant Backend
 
+[![CI](https://github.com/Failureguy94/QuantTrade/actions/workflows/ci.yml/badge.svg)](https://github.com/Failureguy94/QuantTrade/actions/workflows/ci.yml)
+
 FastAPI + SQLAlchemy 2.0 async + PostgreSQL backend for quantitative research,
 backtesting, portfolio risk and paper trading.
 
@@ -43,12 +45,25 @@ not be used to handle real money.
   licensing must be checked before production use. The India calendars cover only
   fixed national holidays (see `app/market_data/calendar.py`).
 
+## Quick start with Docker
+
+```bash
+docker compose up --build
+```
+
+This starts PostgreSQL, applies the migrations, loads the reference data and serves
+the API on http://localhost:8000 (Swagger UI at `/docs`). Settings are read from
+`.env` if it exists. The stack uses development credentials and publishes the API on
+localhost only.
+
 ## Requirements
 
 - Python 3.12+
 - Docker, or a local PostgreSQL 16 instance
 
-## Setup
+## Local setup
+
+To run the API from a virtualenv, with only the database in Docker:
 
 ```bash
 python -m venv .venv
@@ -89,7 +104,7 @@ TOKEN=$(curl -s -X POST $API/auth/login -H 'Content-Type: application/json' \
 AUTH="Authorization: Bearer $TOKEN"
 
 # 2. Find an instrument
-AAPL=$(curl -s "$API/market-data/instruments?search=AAPL" \
+AAPL=$(curl -s "$API/market-data/instruments?search=AAPL" -H "$AUTH" \
   | python -c 'import sys,json; print(json.load(sys.stdin)[0]["id"])')
 
 # 3. Create a strategy (this also creates version 1 of its parameters)
@@ -117,9 +132,9 @@ curl -s -X POST $API/risk/reports -H "$AUTH" -H 'Content-Type: application/json'
 
 ## API
 
-All paths are under `/api/v1`. Health, registration, login and the instrument and
-market-data endpoints are public; everything else requires
-`Authorization: Bearer <token>`. Monetary values are exact decimal strings; statistics
+All paths are under `/api/v1`. Health, registration, login and the plain
+`/instruments` list are public; everything else, including every `/market-data`
+endpoint, requires `Authorization: Bearer <token>`. Monetary values are exact decimal strings; statistics
 are JSON numbers.
 
 ### Auth, health and reference data
@@ -266,6 +281,10 @@ mypy app
 
 Tests never call Yahoo Finance: the provider is replaced by an in-memory fake.
 
+GitHub Actions (`.github/workflows/ci.yml`) runs the same checks on every push and
+pull request, applies the migrations to an empty database, and builds and starts the
+Docker stack.
+
 After changing a model, generate and review a migration:
 
 ```bash
@@ -290,6 +309,7 @@ app/
   schemas/        Pydantic request and response models
   trading/        orders, quotes, portfolio accounting, double-entry ledger
   cli.py          operational commands (seed)
+Dockerfile        API image (used by docker-compose.yml)
 docs/             architecture decisions, database notes, entity inventory
 migrations/       Alembic migrations
 tests/
@@ -308,3 +328,7 @@ tests/
 
 See `docs/architecture-decisions.md` for the reasoning behind these and the later
 decisions.
+
+## Licence
+
+MIT. See `LICENSE`.

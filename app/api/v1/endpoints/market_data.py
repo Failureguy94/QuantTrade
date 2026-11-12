@@ -1,4 +1,8 @@
-"""Market Data API endpoints."""
+"""Market Data API endpoints.
+
+Every route here requires an authenticated user (ADR-014): the historical endpoint
+can trigger upstream provider requests, which must be attributable to an account.
+"""
 
 import uuid
 from datetime import datetime
@@ -8,6 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.deps import get_current_user
 from app.api.errors import market_data_http_exception
 from app.db.session import get_db
 from app.market_data.exceptions import MarketDataError
@@ -21,7 +26,8 @@ from app.schemas.market_data import (
     ProviderSummary,
 )
 
-router = APIRouter()
+# Declared on the router so an endpoint added to this module is protected by default.
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/instruments", response_model=list[MarketDataInstrumentRead])

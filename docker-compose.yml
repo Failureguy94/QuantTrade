@@ -1,3 +1,18 @@
+# Development stack. `docker compose up --build` starts everything;
+# `docker compose up -d postgres` starts only the database (for running the API
+# from a local virtualenv).
+
+x-api: &api
+  build: .
+  image: quant-api:local
+  # Settings come from .env when it exists; the application defaults apply otherwise.
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # Inside the compose network the database is `postgres:5432`, whatever .env says.
+    DATABASE_URL: postgresql+asyncpg://quant:quant@postgres:5432/quant
+
 services:
   postgres:
     image: postgres:16
@@ -17,6 +32,24 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: bring the schema to head and load reference data (both safe to re-run).
+  migrate:
+    <<: *api
+    command: ["sh", "-c", "alembic upgrade head && python -m app.cli seed"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *api
+    restart: unless-stopped
+    ports:
+      # Published on localhost only: this stack uses development credentials.
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   quant_pgdata:
-

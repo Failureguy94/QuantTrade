@@ -6,9 +6,11 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.market_data.seed import seed_market_reference_data
+from app.models.identity import Instrument
 
 
 @pytest.fixture
@@ -17,16 +19,72 @@ async def seeded_market(db_session: AsyncSession):
     await db_session.flush()
 
 
+@pytest.fixture
+def market_client(async_client: AsyncClient, auth_headers: dict[str, str]) -> AsyncClient:
+    """The shared test client, signed in: market-data endpoints require a user."""
+    async_client.headers.update(auth_headers)
+    return async_client
+
+
+PROTECTED_PATHS = [
+    "/api/v1/market-data/instruments",
+    "/api/v1/market-data/providers",
+    f"/api/v1/market-data/{uuid.uuid4()}/historical",
+    # Auth is checked before the query string, so a bad request reveals nothing either.
+    f"/api/v1/market-data/{uuid.uuid4()}/historical?interval=999x&limit=0",
+]
+
+
+@pytest.mark.parametrize("path", PROTECTED_PATHS)
+async def test_market_data_requires_authentication(async_client: AsyncClient, path: str):
+    response = await async_client.get(path)
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("path", PROTECTED_PATHS)
+async def test_market_data_rejects_invalid_token(async_client: AsyncClient, path: str):
+    response = await async_client.get(path, headers={"Authorization": "Bearer not-a-jwt"})
+    assert response.status_code == 401
+
+
+async def test_market_data_rejects_inactive_user(
+    async_client: AsyncClient, db_session: AsyncSession, make_user
+):
+    user, headers = await make_user()
+    user.is_active = False
+    await db_session.flush()
+
+    response = await async_client.get("/api/v1/market-data/providers", headers=headers)
+    assert response.status_code == 403
+
+
+async def test_anonymous_request_never_reaches_the_provider(
+    async_client: AsyncClient, db_session: AsyncSession, seeded_market
+):
+    aapl_id = (
+        await db_session.execute(select(Instrument.id).where(Instrument.symbol == "AAPL"))
+    ).scalar_one()
+
+    with patch("yfinance.download") as download:
+        response = await async_client.get(
+            f"/api/v1/market-data/{aapl_id}/historical?force_refresh=true"
+        )
+
+    assert response.status_code == 401
+    download.assert_not_called()
+
+
 @pytest.mark.asyncio
-async def test_api_list_market_data_instruments(async_client: AsyncClient, seeded_market):
+async def test_api_list_market_data_instruments(market_client: AsyncClient, seeded_market):
     # 1. List all instruments
-    response = await async_client.get("/api/v1/market-data/instruments")
+    response = await market_client.get("/api/v1/market-data/instruments")
     assert response.status_code == 200
     instruments = response.json()
     assert len(instruments) >= 6
 
     # 2. Filter by exchange MIC (XNSE)
-    nse_response = await async_client.get("/api/v1/market-data/instruments?exchange_mic=XNSE")
+    nse_response = await market_client.get("/api/v1/market-data/instruments?exchange_mic=XNSE")
     assert nse_response.status_code == 200
     nse_instruments = nse_response.json()
     assert len(nse_instruments) >= 3
@@ -35,7 +93,7 @@ async def test_api_list_market_data_instruments(async_client: AsyncClient, seede
         assert inst["currency_code"] == "INR"
 
     # 3. Filter by exchange MIC (XNAS)
-    nasdaq_response = await async_client.get("/api/v1/market-data/instruments?exchange_mic=XNAS")
+    nasdaq_response = await market_client.get("/api/v1/market-data/instruments?exchange_mic=XNAS")
     assert nasdaq_response.status_code == 200
     nasdaq_instruments = nasdaq_response.json()
     assert len(nasdaq_instruments) >= 2
@@ -44,7 +102,7 @@ async def test_api_list_market_data_instruments(async_client: AsyncClient, seede
         assert inst["currency_code"] == "USD"
 
     # 4. Search query
-    search_response = await async_client.get("/api/v1/market-data/instruments?search=Apple")
+    search_response = await market_client.get("/api/v1/market-data/instruments?search=Apple")
     assert search_response.status_code == 200
     search_data = search_response.json()
     assert len(search_data) == 1
@@ -52,8 +110,8 @@ async def test_api_list_market_data_instruments(async_client: AsyncClient, seede
 
 
 @pytest.mark.asyncio
-async def test_api_list_market_data_providers(async_client: AsyncClient):
-    response = await async_client.get("/api/v1/market-data/providers")
+async def test_api_list_market_data_providers(market_client: AsyncClient):
+    response = await market_client.get("/api/v1/market-data/providers")
     assert response.status_code == 200
     providers = response.json()
     assert len(providers) >= 1
@@ -65,10 +123,10 @@ async def test_api_list_market_data_providers(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_api_historical_data_mocked_fetch_and_fingerprint(
-    async_client: AsyncClient, db_session: AsyncSession, seeded_market
+    market_client: AsyncClient, db_session: AsyncSession, seeded_market
 ):
     # Fetch AAPL instrument
-    inst_resp = await async_client.get("/api/v1/market-data/instruments?search=AAPL")
+    inst_resp = await market_client.get("/api/v1/market-data/instruments?search=AAPL")
     aapl_id = inst_resp.json()[0]["id"]
 
     # Mock yfinance return
@@ -85,7 +143,7 @@ async def test_api_historical_data_mocked_fetch_and_fingerprint(
     )
 
     with patch("yfinance.download", return_value=mock_df):
-        resp = await async_client.get(
+        resp = await market_client.get(
             f"/api/v1/market-data/{aapl_id}/historical?interval=1d&adjusted=true"
         )
         assert resp.status_code == 200
@@ -101,7 +159,7 @@ async def test_api_historical_data_mocked_fetch_and_fingerprint(
         assert len(data["data_fingerprint"]) == 64
 
     # Verify data was persisted in database by querying again WITHOUT mock
-    cached_resp = await async_client.get(
+    cached_resp = await market_client.get(
         f"/api/v1/market-data/{aapl_id}/historical?interval=1d&adjusted=true"
     )
     assert cached_resp.status_code == 200
@@ -112,13 +170,13 @@ async def test_api_historical_data_mocked_fetch_and_fingerprint(
 
 @pytest.mark.asyncio
 async def test_api_historical_data_date_range_validation_failure(
-    async_client: AsyncClient, seeded_market
+    market_client: AsyncClient, seeded_market
 ):
-    inst_resp = await async_client.get("/api/v1/market-data/instruments?search=AAPL")
+    inst_resp = await market_client.get("/api/v1/market-data/instruments?search=AAPL")
     aapl_id = inst_resp.json()[0]["id"]
 
     # start after end should be rejected with 422
-    resp = await async_client.get(
+    resp = await market_client.get(
         f"/api/v1/market-data/{aapl_id}/historical?start=2026-11-10T00:00:00Z&end=2026-11-01T00:00:00Z"
     )
     assert resp.status_code == 422
@@ -127,12 +185,12 @@ async def test_api_historical_data_date_range_validation_failure(
 
 @pytest.mark.asyncio
 async def test_api_historical_data_invalid_interval(
-    async_client: AsyncClient, seeded_market
+    market_client: AsyncClient, seeded_market
 ):
-    inst_resp = await async_client.get("/api/v1/market-data/instruments?search=AAPL")
+    inst_resp = await market_client.get("/api/v1/market-data/instruments?search=AAPL")
     aapl_id = inst_resp.json()[0]["id"]
 
-    resp = await async_client.get(
+    resp = await market_client.get(
         f"/api/v1/market-data/{aapl_id}/historical?interval=999x"
     )
     assert resp.status_code == 400
@@ -140,22 +198,22 @@ async def test_api_historical_data_invalid_interval(
 
 
 @pytest.mark.asyncio
-async def test_api_historical_data_instrument_not_found(async_client: AsyncClient):
+async def test_api_historical_data_instrument_not_found(market_client: AsyncClient):
     random_id = uuid.uuid4()
-    resp = await async_client.get(f"/api/v1/market-data/{random_id}/historical")
+    resp = await market_client.get(f"/api/v1/market-data/{random_id}/historical")
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_api_historical_data_provider_rate_limit(
-    async_client: AsyncClient, seeded_market
+    market_client: AsyncClient, seeded_market
 ):
-    inst_resp = await async_client.get("/api/v1/market-data/instruments?search=AAPL")
+    inst_resp = await market_client.get("/api/v1/market-data/instruments?search=AAPL")
     aapl_id = inst_resp.json()[0]["id"]
 
     with patch("yfinance.download", side_effect=Exception("HTTP 429 Too Many Requests")):
-        resp = await async_client.get(
+        resp = await market_client.get(
             f"/api/v1/market-data/{aapl_id}/historical?force_refresh=true"
         )
         assert resp.status_code == 429
@@ -164,13 +222,13 @@ async def test_api_historical_data_provider_rate_limit(
 
 @pytest.mark.asyncio
 async def test_api_historical_data_provider_connection_error(
-    async_client: AsyncClient, seeded_market
+    market_client: AsyncClient, seeded_market
 ):
-    inst_resp = await async_client.get("/api/v1/market-data/instruments?search=AAPL")
+    inst_resp = await market_client.get("/api/v1/market-data/instruments?search=AAPL")
     aapl_id = inst_resp.json()[0]["id"]
 
     with patch("yfinance.download", side_effect=ConnectionError("DNS failure")):
-        resp = await async_client.get(
+        resp = await market_client.get(
             f"/api/v1/market-data/{aapl_id}/historical?force_refresh=true"
         )
         assert resp.status_code == 502
