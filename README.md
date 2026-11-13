@@ -39,10 +39,9 @@ not be used to handle real money.
   short, without borrow cost or margin.)
 - **Paper fills are simplified**: the full quantity fills at the latest daily reference
   price, adjusted for slippage. There is no order book, partial fill or volume limit.
-- **Backtests run inside the request**, on one instrument, on daily, weekly or monthly
-  bars.
-- **Resting limit orders are re-priced on demand** through
-  `POST /portfolios/{id}/orders/process`; there is no background matcher.
+- **Backtests cover one instrument**, on daily, weekly or monthly bars.
+- **Resting limit orders are re-priced periodically**, not continuously: the worker
+  checks them every `MATCHER_INTERVAL_SECONDS` against the latest daily reference price.
 - **Yahoo Finance is a research feed**, not real-time or exchange-grade, and its
   licensing must be checked before production use. The India calendars cover only
   fixed national holidays (see `app/market_data/calendar.py`).
@@ -217,6 +216,11 @@ The response is `201` whenever the experiment was recorded. Check `status`:
 `COMPLETED` carries `results` (metrics, equity curve, trades); `FAILED` carries
 `error_message`, for example when the provider has no data for the range.
 
+Add `?async=true` to queue the run instead of waiting for it. The response is then
+`202` with `status: QUEUED`; the worker runs it, and `GET /experiments/{id}` reports
+`RUNNING`, then `COMPLETED` or `FAILED`. A queued run produces exactly the result an
+immediate one would. Each user may have `MAX_QUEUED_RUNS_PER_USER` runs waiting.
+
 If the candle store holds only part of the requested range, the range is fetched
 again rather than backtesting on a partial cache. If the provider's own data starts
 late or ends early, the run completes and `results.warnings` states what was covered.
@@ -252,7 +256,7 @@ with a `limit_price`. Submitting returns `201` with the order. An order the pape
 broker refuses — not enough cash, nothing to sell, no usable price, wrong currency —
 is still created, with `status: REJECTED` and a `rejection_reason`, so always read
 `status`. A limit order that is not yet marketable is `OPEN` until it is filled by
-`/orders/process` or cancelled.
+the worker (or by calling `/orders/process` yourself) or cancelled.
 
 **Idempotency.** Send an `Idempotency-Key` header to make a submission safe to retry.
 Repeating the same request with the same key returns the original order with `200`;
@@ -314,12 +318,31 @@ Set in `.env` (see `.env.example`):
 | `LOGIN_MAX_FAILURES`, `LOGIN_LOCKOUT_MINUTES` | `5`, `15` | Failed sign-ins per email before a lockout |
 | `MAX_CONCURRENT_RUNS_PER_USER` | `2` | Backtests and risk reports in flight per user |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` | Largest accepted request body |
+| `WORKER_EMBEDDED` | `true` | Run the worker inside the API process |
+| `WORKER_POLL_SECONDS` | `2` | How often an idle worker looks for queued runs |
+| `MATCHER_INTERVAL_SECONDS` | `60` | How often resting limit orders are re-priced |
+| `JOB_TIMEOUT_MINUTES` | `30` | When a run with no progress counts as abandoned |
+| `MAX_QUEUED_RUNS_PER_USER` | `5` | Queued or running async backtests per user |
 | `LOG_FORMAT`, `LOG_LEVEL` | by environment, `INFO` | `text` or `json` (default in production) |
 | `SENTRY_DSN` | | Error reporting (needs `pip install '.[sentry]'`) |
 | `PAPER_COMMISSION_BPS` | `5` | Paper commission, basis points of notional |
 | `PAPER_SLIPPAGE_BPS` | `2` | Paper slippage, basis points of price |
 | `QUOTE_CACHE_TTL_SECONDS` | `60` | How long a reference quote is reused |
 | `QUOTE_MAX_AGE_DAYS` | `7` | Oldest price an order may fill against |
+
+## Background worker
+
+Queued backtests and resting limit orders are handled by a worker. By default it runs
+inside the API process, so there is nothing extra to start. To run it as its own
+process (for example to keep heavy backtests away from request handling), set
+`WORKER_EMBEDDED=false` for the API and start:
+
+```bash
+python -m app.worker
+```
+
+Any number of workers can run at once; a job is only ever taken by one of them. A job
+left running by a worker that died is marked `FAILED` after `JOB_TIMEOUT_MINUTES`.
 
 ## Development
 
@@ -365,6 +388,7 @@ app/
   schemas/        Pydantic request and response models
   trading/        orders, quotes, portfolio accounting, double-entry ledger
   cli.py          operational commands (seed)
+  worker.py       background worker: queued backtests, limit-order matcher
 Dockerfile        API image (used by docker-compose.yml)
 docs/             architecture decisions, database notes, entity inventory
 migrations/       Alembic migrations

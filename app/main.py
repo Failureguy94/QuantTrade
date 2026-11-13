@@ -1,16 +1,19 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
+from app.api.deps import get_market_data_provider
 from app.api.errors import register_exception_handlers
 from app.api.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.api.pagination import TOTAL_COUNT_HEADER
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, configure_sentry
-from app.db.session import engine
+from app.db.session import AsyncSessionLocal, engine
+from app.worker import Worker
 
 configure_logging()
 configure_sentry()
@@ -18,7 +21,15 @@ configure_sentry()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    worker: Worker | None = None
+    worker_task: asyncio.Task | None = None
+    if settings.worker_embedded:
+        worker = Worker(AsyncSessionLocal, get_market_data_provider())
+        worker_task = asyncio.create_task(worker.run_forever())
     yield
+    if worker is not None and worker_task is not None:
+        worker.stop()
+        await worker_task
     await engine.dispose()
 
 

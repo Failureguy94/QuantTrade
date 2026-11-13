@@ -32,9 +32,10 @@ async def _get_owned_experiment(
 ) -> Experiment:
     experiment = (
         await db.execute(
-            select(Experiment).where(
-                Experiment.id == experiment_id, Experiment.user_id == user_id
-            )
+            select(Experiment)
+            .where(Experiment.id == experiment_id, Experiment.user_id == user_id)
+            # The worker updates experiments from its own session.
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if experiment is None:
@@ -62,16 +63,33 @@ def _detail(experiment: Experiment) -> ExperimentRead:
 )
 async def run_backtest(
     payload: BacktestRequest,
+    response: Response,
+    run_async: bool = Query(
+        default=False,
+        alias="async",
+        description="Queue the run and return at once instead of waiting for the result",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     market_data: MarketDataService = Depends(get_market_data_service),
 ):
     """Run a backtest of a strategy version on one instrument.
 
-    The run executes within the request. The experiment is always stored: check
-    ``status`` — ``COMPLETED`` carries ``results``, ``FAILED`` carries
-    ``error_message`` (for example when the provider returned no data).
+    By default the run executes within the request and the response is ``201``. The
+    experiment is always stored: check ``status`` — ``COMPLETED`` carries
+    ``results``, ``FAILED`` carries ``error_message`` (for example when the provider
+    returned no data).
+
+    With ``?async=true`` the experiment is stored as ``QUEUED`` and returned with
+    ``202``. The worker runs it; poll ``GET /experiments/{id}`` until ``status`` is
+    ``COMPLETED`` or ``FAILED``.
     """
+    if run_async:
+        experiment = await BacktestService(db, market_data).enqueue(current_user.id, payload)
+        await db.commit()
+        response.status_code = status.HTTP_202_ACCEPTED
+        return _detail(experiment)
+
     async with run_slots.slot(f"runs:{current_user.id}", settings.max_concurrent_runs_per_user):
         experiment = await BacktestService(db, market_data).run_backtest(
             current_user.id, payload
@@ -97,6 +115,7 @@ async def list_experiments(
         .order_by(Experiment.created_at.desc(), Experiment.id)
         .limit(limit)
         .offset(offset)
+        .execution_options(populate_existing=True)
     )
     if status_filter:
         stmt = stmt.where(Experiment.status == status_filter.upper())

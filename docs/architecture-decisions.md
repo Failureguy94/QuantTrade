@@ -119,3 +119,15 @@ and returns tokens in JSON bodies and sets no cookies, so it has no CSRF surface
 web application keeps the refresh token in an httpOnly cookie on its own origin.
 `users.tokens_valid_after` lets a password change or sign-out-everywhere refuse access
 tokens that have not expired yet.
+
+## ADR-018: The database is the job queue
+
+Queued backtests are rows in `simulation_jobs`. A worker claims the oldest one with
+`SELECT ... FOR UPDATE SKIP LOCKED` and marks it `RUNNING` in the same transaction,
+so several workers can run without a queue service and without taking the same job.
+The worker runs inside the API process by default and can be run separately
+(`python -m app.worker`). A job left `RUNNING` by a dead worker is failed after a
+timeout rather than retried, so a job that crashes its worker cannot do so forever;
+the user can run it again. The same worker re-prices resting limit orders on an
+interval, one portfolio per transaction, under the portfolio row lock that already
+serialises order handling (ADR-010).

@@ -294,8 +294,8 @@ async def process_open_orders(
 ):
     """Re-price resting limit orders against the latest quotes.
 
-    Returns the orders whose status changed. Call this on whatever schedule suits
-    the deployment; there is no background matcher.
+    Returns the orders whose status changed. The worker does this periodically;
+    call it to have a resting order checked right away.
     """
     orders = await OrderService(db, quotes).process_open_orders(
         user_id=current_user.id, portfolio_id=portfolio_id

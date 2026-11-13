@@ -125,6 +125,19 @@ check(again["results"]["final_equity"] == experiment["results"]["final_equity"],
       "rerun on stored candles gave a different result")
 print(f"  rerun from the candle store in {time.time() - started:.2f}s: identical")
 
+queued = call("POST", "/experiments/backtests?async=true", 202, headers=headers, json=request)
+queued_id = queued.json()["id"]
+check(queued.json()["status"] == "QUEUED", "async backtest was not queued")
+for _ in range(120):
+    polled = call("GET", f"/experiments/{queued_id}", 200, headers=headers).json()
+    if polled["status"] in ("COMPLETED", "FAILED"):
+        break
+    time.sleep(0.5)
+check(polled["status"] == "COMPLETED", f"queued backtest ended as {polled['status']}")
+check(polled["results"]["final_equity"] == experiment["results"]["final_equity"],
+      "queued run differs from the immediate run")
+print("  queued run completed by the worker: identical")
+
 # --- paper trading at live quotes
 portfolio = call(
     "POST", "/portfolios", 201, headers=headers,

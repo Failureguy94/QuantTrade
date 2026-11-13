@@ -17,6 +17,7 @@ from app.main import app as fastapi_app
 from app.market_data.seed import seed_market_reference_data
 from app.models.identity import Exchange, Instrument, User
 from app.trading.quotes import QuoteService
+from app.worker import Worker
 from helpers import FakeProvider
 
 
@@ -140,6 +141,17 @@ def fake_provider(async_client: AsyncClient) -> FakeProvider:
     provider = FakeProvider()
     fastapi_app.dependency_overrides[get_market_data_provider] = lambda: provider
     return provider
+
+
+@pytest.fixture
+def session_factory(db_session: AsyncSession) -> async_sessionmaker[AsyncSession]:
+    """Sessions that share the test's connection, and so its rolled-back transaction."""
+    return async_sessionmaker(bind=db_session.bind, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture
+def worker(session_factory, fake_provider: FakeProvider) -> Worker:
+    return Worker(session_factory, fake_provider)
 
 
 @pytest.fixture

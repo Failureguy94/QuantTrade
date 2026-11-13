@@ -7,7 +7,7 @@ from datetime import UTC, datetime, time
 from typing import Any
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backtesting.engine import ENGINE_VERSION, BacktestConfig, BacktestError, run_backtest
@@ -18,7 +18,9 @@ from app.backtesting.strategies import (
     generate_signals,
     validate_parameters,
 )
+from app.core.config import settings
 from app.core.errors import NotFoundError, UnprocessableError
+from app.core.ratelimit import RateLimitExceeded
 from app.market_data.exceptions import MarketDataError
 from app.market_data.service import MarketDataService
 from app.market_data.types import OHLCVRecord, PriceAdjustmentMode
@@ -30,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 EXPERIMENT_TYPE_BACKTEST = "BACKTEST"
 MAX_BACKTEST_BARS = 100_000
+
+STATUS_QUEUED = "QUEUED"
+STATUS_RUNNING = "RUNNING"
+STATUS_COMPLETED = "COMPLETED"
+STATUS_FAILED = "FAILED"
 
 
 def _simulate(
@@ -63,12 +70,40 @@ class BacktestService:
         return row[0], row[1]
 
     async def run_backtest(self, user_id: uuid.UUID, request: BacktestRequest) -> Experiment:
-        """Run a backtest and persist it as an experiment.
+        """Run a backtest now and persist it as an experiment.
 
         Problems with the request itself raise. Failures while running (no market
         data, provider outage, too few bars) are recorded on the experiment, which
         is returned with status ``FAILED`` so the attempt stays auditable.
         """
+        experiment, job = await self.prepare(user_id, request)
+        return await self.execute(experiment, job)
+
+    async def enqueue(self, user_id: uuid.UUID, request: BacktestRequest) -> Experiment:
+        """Validate and store a backtest for the worker to run (status ``QUEUED``)."""
+        waiting = await self.db.scalar(
+            select(func.count())
+            .select_from(SimulationJob)
+            .where(
+                SimulationJob.user_id == user_id,
+                SimulationJob.status.in_([STATUS_QUEUED, STATUS_RUNNING]),
+            )
+        )
+        if settings.rate_limit_enabled and (waiting or 0) >= settings.max_queued_runs_per_user:
+            raise RateLimitExceeded(
+                10,
+                detail=(
+                    f"{waiting} runs are already queued or running "
+                    f"(limit {settings.max_queued_runs_per_user}); wait for one to finish"
+                ),
+            )
+        experiment, _ = await self.prepare(user_id, request)
+        return experiment
+
+    async def prepare(
+        self, user_id: uuid.UUID, request: BacktestRequest
+    ) -> tuple[Experiment, SimulationJob]:
+        """Check the request and record the experiment and its job as ``QUEUED``."""
         strategy, version = await self._load_strategy_version(
             user_id, request.strategy_version_id
         )
@@ -86,12 +121,11 @@ class BacktestService:
         adjustment_mode = (
             PriceAdjustmentMode.SPLIT_AND_DIVIDEND if request.adjusted else PriceAdjustmentMode.RAW
         )
-        started_at = datetime.now(UTC)
         experiment = Experiment(
             user_id=user_id,
             strategy_version_id=version.id,
             experiment_type=EXPERIMENT_TYPE_BACKTEST,
-            status="RUNNING",
+            status=STATUS_QUEUED,
             configuration={
                 "request": request.model_dump(mode="json"),
                 "strategy": {
@@ -113,7 +147,6 @@ class BacktestService:
             engine_version=ENGINE_VERSION,
             # Built-in strategies are deterministic: no random numbers are drawn.
             random_seed=None,
-            started_at=started_at,
         )
         self.db.add(experiment)
         await self.db.flush()
@@ -121,16 +154,31 @@ class BacktestService:
             user_id=user_id,
             experiment_id=experiment.id,
             job_type=EXPERIMENT_TYPE_BACKTEST,
-            status="RUNNING",
+            status=STATUS_QUEUED,
             progress=0,
         )
         self.db.add(job)
+        await self.db.flush()
+        return experiment, job
+
+    async def execute(self, experiment: Experiment, job: SimulationJob) -> Experiment:
+        """Run a prepared experiment. Everything it needs is in its configuration."""
+        configuration = experiment.configuration
+        request = BacktestRequest.model_validate(configuration["request"])
+        strategy_type: str = configuration["strategy"]["type"]
+        parameters: dict[str, Any] = configuration["strategy"]["parameters"]
+        adjustment_mode = PriceAdjustmentMode(configuration["execution"]["adjustment_mode"])
+        instrument_id = uuid.UUID(configuration["instrument"]["id"])
+        currency: str = configuration["instrument"]["currency"]
+
+        experiment.status = job.status = STATUS_RUNNING
+        experiment.started_at = datetime.now(UTC)
         await self.db.flush()
 
         try:
             _, bars, fingerprint, data_warnings = (
                 await self.market_data.get_covering_market_data(
-                    instrument.id,
+                    instrument_id,
                     interval=request.interval,
                     adjustment_mode=adjustment_mode,
                     start=datetime.combine(request.start, time.min, tzinfo=UTC),
@@ -152,13 +200,11 @@ class BacktestService:
                 periods_per_year=PERIODS_PER_YEAR[request.interval],
                 risk_free_rate=request.risk_free_rate,
             )
-            results = await asyncio.to_thread(
-                _simulate, bars, strategy.strategy_type, parameters, config
-            )
+            results = await asyncio.to_thread(_simulate, bars, strategy_type, parameters, config)
         except (MarketDataError, BacktestError) as exc:
             logger.info("Backtest %s failed: %s", experiment.id, exc)
             message = exc.message if isinstance(exc, MarketDataError) else str(exc)
-            experiment.status = job.status = "FAILED"
+            experiment.status = job.status = STATUS_FAILED
             experiment.error_message = job.error_message = message
             experiment.completed_at = datetime.now(UTC)
             await self.db.flush()
@@ -176,11 +222,11 @@ class BacktestService:
             "first_bar": bars[0].timestamp.isoformat(),
             "last_bar": bars[-1].timestamp.isoformat(),
             "provider": bars[0].provider,
-            "currency": instrument.currency_code,
+            "currency": currency,
         }
 
         experiment.results = results
-        experiment.status = job.status = "COMPLETED"
+        experiment.status = job.status = STATUS_COMPLETED
         experiment.completed_at = datetime.now(UTC)
         job.progress = 100
         job.result_reference = f"experiments/{experiment.id}"

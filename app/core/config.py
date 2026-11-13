@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     max_concurrent_runs_per_user: int = 2
     max_request_body_bytes: int = 1_048_576
 
+    # Background work: queued backtests and resting limit orders. By default the API
+    # process runs the worker itself; set WORKER_EMBEDDED=false when running
+    # `python -m app.worker` as its own process.
+    worker_embedded: bool = True
+    worker_poll_seconds: float = 2.0
+    matcher_interval_seconds: float = 60.0
+    job_timeout_minutes: int = 30
+    max_queued_runs_per_user: int = 5
+
     # Logging: "text" for people, "json" for log collectors. Empty picks by environment.
     log_level: str = "INFO"
     log_format: str = ""
