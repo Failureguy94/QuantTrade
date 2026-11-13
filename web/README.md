@@ -71,8 +71,19 @@ repository README.
 1. Import the repository in Vercel and set the **Root Directory** to `web`.
 2. Add the environment variable `API_BASE_URL`: the public address of the API, for
    example `https://quanttrade-api.onrender.com`.
-3. Deploy, then set the API's `CORS_ORIGINS` and `FRONTEND_BASE_URL` to the address
-   Vercel gave the site (emailed links point there).
+3. Deploy, then set the API's `FRONTEND_BASE_URL` (emailed links point there) and
+   `CORS_ORIGINS` to the address Vercel gave the site.
+
+Once the project is connected to the repository, every push to `main` deploys to
+production and every pull request gets a preview deployment. Preview URLs sit behind
+Vercel's deployment protection by default.
+
+Because the root directory is `web`, deploy from the command line from the
+**repository root**, not from `web/`: `vercel deploy --prod`.
+
+`CORS_ORIGINS` is only needed if something other than this app calls the API from a
+browser. The web app itself calls the API from its server, so a wrong value there does
+not break it.
 
 ## Layout
 

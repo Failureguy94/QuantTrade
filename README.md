@@ -5,6 +5,11 @@
 Quantitative research, backtesting, portfolio risk and paper trading: a FastAPI +
 SQLAlchemy 2.0 async + PostgreSQL API, and a Next.js web application (`web/`).
 
+**Live demo:** https://quanttrade-ten.vercel.app (web) on https://quanttrade-api-k8n6.onrender.com
+(API docs at `/docs`). It runs on free hosting plans: the first request after a quiet
+spell takes up to a minute while the API wakes, and the database is replaced when its
+free term ends, so do not keep anything you need there. Paper trading only.
+
 | | |
 |---|---|
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Backtest result](docs/screenshots/backtest.png) |
