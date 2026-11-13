@@ -79,3 +79,12 @@ through one transition table and are appended to `order_events`.
 Every query for a user-owned resource filters on the owner. A resource owned by
 someone else returns `404`, identical to a missing one, so identifiers cannot be
 probed. Idempotency keys are unique per portfolio for the same reason.
+
+## ADR-014: Market data requires authentication
+
+Every `/market-data` endpoint requires a signed-in user, declared once on the router so
+a new endpoint in that module is protected by default. The historical endpoint can
+trigger requests to the upstream provider; those must be attributable to an account and
+cannot be available to anonymous callers. Authentication is checked before the query
+string is validated, so an anonymous request learns nothing from a malformed one. The
+plain `/instruments` list reads only local reference data and stays public.

@@ -281,6 +281,11 @@ mypy app
 
 Tests never call Yahoo Finance: the provider is replaced by an in-memory fake.
 
+`scripts/smoke.py` exercises a running API end to end over HTTP with live provider
+data (auth, a backtest, orders, ledger reconciliation, risk, isolation between users
+and concurrent orders): `python scripts/smoke.py http://127.0.0.1:8000`. It registers
+throwaway users, so use a development database.
+
 GitHub Actions (`.github/workflows/ci.yml`) runs the same checks on every push and
 pull request, applies the migrations to an empty database, and builds and starts the
 Docker stack.
@@ -312,6 +317,7 @@ app/
 Dockerfile        API image (used by docker-compose.yml)
 docs/             architecture decisions, database notes, entity inventory
 migrations/       Alembic migrations
+scripts/          end-to-end smoke test
 tests/
 ```
 
