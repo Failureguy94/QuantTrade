@@ -7,13 +7,15 @@ can trigger upstream provider requests, which must be attributable to an account
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.api.errors import market_data_http_exception
+from app.api.limits import market_data_rate_limit
+from app.api.pagination import set_total_count
 from app.db.session import get_db
 from app.market_data.exceptions import MarketDataError
 from app.market_data.service import MarketDataService
@@ -32,6 +34,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 @router.get("/instruments", response_model=list[MarketDataInstrumentRead])
 async def list_market_data_instruments(
+    response: Response,
     exchange_mic: str | None = Query(
         default=None,
         description="Filter by exchange Market Identifier Code (e.g. XNSE, XNAS)",
@@ -53,6 +56,7 @@ async def list_market_data_instruments(
             selectinload(Instrument.provider_symbols),
         )
         .where(Instrument.is_active.is_(True))
+        .order_by(Instrument.symbol, Instrument.id)
         .limit(limit)
         .offset(offset)
     )
@@ -70,6 +74,7 @@ async def list_market_data_instruments(
             )
         )
 
+    await set_total_count(response, db, stmt)
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -97,7 +102,11 @@ async def list_market_data_providers(
     ]
 
 
-@router.get("/{instrument_id}/historical", response_model=HistoricalDataResponse)
+@router.get(
+    "/{instrument_id}/historical",
+    response_model=HistoricalDataResponse,
+    dependencies=[Depends(market_data_rate_limit)],
+)
 async def get_historical_market_data(
     instrument_id: uuid.UUID,
     start: datetime | None = Query(default=None, description="Start date/time (UTC)"),

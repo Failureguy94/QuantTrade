@@ -48,6 +48,26 @@ def new_user() -> dict[str, str]:
     return {"Authorization": f"Bearer {token.json()['access_token']}"}
 
 
+def check_sessions() -> None:
+    email = f"smoke_{uuid.uuid4().hex[:10]}@quant.example"
+    call("POST", "/auth/register", 201, json={"email": email, "password": PASSWORD})
+    first = call("POST", "/auth/login", 200, json={"email": email, "password": PASSWORD}).json()
+    second = call("POST", "/auth/refresh", 200,
+                  json={"refresh_token": first["refresh_token"]}).json()
+    check(second["refresh_token"] != first["refresh_token"], "refresh token was not rotated")
+    bearer = {"Authorization": f"Bearer {second['access_token']}"}
+    call("GET", "/auth/me", 200, headers=bearer)
+    call("POST", "/auth/logout-all", 204, headers=bearer)
+    call("GET", "/auth/me", 401, headers=bearer)
+    call("POST", "/auth/refresh", 401, json={"refresh_token": second["refresh_token"]})
+    call("POST", "/auth/login", 401, json={"email": email, "password": "wrong-password"})
+    relogin = call("POST", "/auth/login", 200, json={"email": email, "password": PASSWORD}).json()
+    call("POST", "/auth/delete-account", 204, json={"password": PASSWORD},
+         headers={"Authorization": f"Bearer {relogin['access_token']}"})
+    call("POST", "/auth/login", 401, json={"email": email, "password": PASSWORD})
+    print("sessions: refresh rotates, sign-out-everywhere revokes, account deletion works")
+
+
 for _ in range(60):
     try:
         if client.get(BASE + "/health").status_code == 200:
@@ -58,12 +78,16 @@ for _ in range(60):
 else:
     fail(f"no healthy API at {BASE}")
 
-print("database:", call("GET", "/health/database", 200).json())
+print("database:", call("GET", "/health/ready", 200).json())
+check_sessions()
 headers = new_user()
 
 # --- market data needs a token
 call("GET", "/market-data/instruments", 401)
-instruments = call("GET", "/market-data/instruments", 200, headers=headers).json()
+listing = call("GET", "/market-data/instruments", 200, headers=headers)
+check(listing.headers["X-Total-Count"].isdigit(), "list did not report a total")
+check("X-Request-ID" in listing.headers, "response has no request id")
+instruments = listing.json()
 by_symbol = {(i["exchange"]["mic"], i["symbol"]): i["id"] for i in instruments}
 check(("XNAS", "AAPL") in by_symbol, "reference data is not seeded (python -m app.cli seed)")
 aapl = by_symbol[("XNAS", "AAPL")]

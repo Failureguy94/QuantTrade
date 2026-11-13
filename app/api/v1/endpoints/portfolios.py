@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_quote_service
+from app.api.pagination import set_total_count
 from app.core.errors import NotFoundError
 from app.db.session import get_db
 from app.models.identity import Instrument, User
@@ -87,6 +88,7 @@ async def create_portfolio(
 
 @router.get("", response_model=list[PortfolioRead])
 async def list_portfolios(
+    response: Response,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -99,6 +101,7 @@ async def list_portfolios(
         .limit(limit)
         .offset(offset)
     )
+    await set_total_count(response, db, stmt)
     return (await db.execute(stmt)).scalars().all()
 
 
@@ -259,6 +262,7 @@ async def submit_order(
 
 @router.get("/{portfolio_id}/orders", response_model=list[OrderRead])
 async def list_orders(
+    response: Response,
     portfolio_id: uuid.UUID,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
@@ -277,6 +281,7 @@ async def list_orders(
     )
     if status_filter:
         stmt = stmt.where(Order.status == status_filter.upper())
+    await set_total_count(response, db, stmt)
     return (await db.execute(stmt)).scalars().all()
 
 
@@ -366,6 +371,7 @@ async def cancel_order(
 
 @router.get("/{portfolio_id}/trades", response_model=list[TradeRead])
 async def list_trades(
+    response: Response,
     portfolio_id: uuid.UUID,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -382,12 +388,14 @@ async def list_trades(
         .limit(limit)
         .offset(offset)
     )
+    await set_total_count(response, db, stmt)
     return _trade_reads((await db.execute(stmt)).all())
 
 
 # ---------------------------------------------------------------------- ledger
 @router.get("/{portfolio_id}/ledger", response_model=list[LedgerTransactionRead])
 async def list_ledger_transactions(
+    response: Response,
     portfolio_id: uuid.UUID,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -404,6 +412,7 @@ async def list_ledger_transactions(
         .limit(limit)
         .offset(offset)
     )
+    await set_total_count(response, db, stmt)
     return (await db.execute(stmt)).scalars().all()
 
 

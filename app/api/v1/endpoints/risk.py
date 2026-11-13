@@ -2,12 +2,16 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_market_data_service
+from app.api.limits import risk_rate_limit
+from app.api.pagination import set_total_count
+from app.core.config import settings
 from app.core.errors import NotFoundError
+from app.core.ratelimit import run_slots
 from app.db.session import get_db
 from app.market_data.service import MarketDataService
 from app.models.identity import User
@@ -18,7 +22,12 @@ from app.schemas.risk import RiskReportCreate, RiskReportRead
 router = APIRouter()
 
 
-@router.post("/reports", response_model=RiskReportRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/reports",
+    response_model=RiskReportRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(risk_rate_limit)],
+)
 async def create_risk_report(
     payload: RiskReportCreate,
     current_user: User = Depends(get_current_user),
@@ -40,21 +49,23 @@ async def create_risk_report(
         simulations=payload.simulations,
         random_seed=payload.random_seed,
     )
-    if payload.portfolio_id is not None:
-        report = await service.create_portfolio_report(
-            current_user.id, payload.portfolio_id, params
-        )
-    else:
-        assert payload.experiment_id is not None  # enforced by the schema
-        report = await service.create_experiment_report(
-            current_user.id, payload.experiment_id, params
-        )
-    await db.commit()
+    async with run_slots.slot(f"runs:{current_user.id}", settings.max_concurrent_runs_per_user):
+        if payload.portfolio_id is not None:
+            report = await service.create_portfolio_report(
+                current_user.id, payload.portfolio_id, params
+            )
+        else:
+            assert payload.experiment_id is not None  # enforced by the schema
+            report = await service.create_experiment_report(
+                current_user.id, payload.experiment_id, params
+            )
+        await db.commit()
     return report
 
 
 @router.get("/reports", response_model=list[RiskReportRead])
 async def list_risk_reports(
+    response: Response,
     portfolio_id: uuid.UUID | None = Query(default=None),
     experiment_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -73,6 +84,7 @@ async def list_risk_reports(
         stmt = stmt.where(RiskReport.portfolio_id == portfolio_id)
     if experiment_id:
         stmt = stmt.where(RiskReport.experiment_id == experiment_id)
+    await set_total_count(response, db, stmt)
     return (await db.execute(stmt)).scalars().all()
 
 

@@ -6,6 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.email import EmailSender, build_email_sender
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.market_data.base import MarketDataProvider
@@ -89,6 +90,18 @@ async def get_current_user(
             detail="Inactive user",
         )
 
+    # Tokens issued before the user's sessions were ended (password change, reset,
+    # sign-out everywhere) are refused even though their signature is still valid.
+    if (
+        user.tokens_valid_after is not None
+        and float(payload["iat"]) < user.tokens_valid_after.timestamp()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 
@@ -100,6 +113,12 @@ async def require_authenticated_user(
 
 
 _default_provider = YahooFinanceProvider()
+_default_email_sender = build_email_sender()
+
+
+def get_email_sender() -> EmailSender:
+    """Outgoing email. Override in tests to capture messages."""
+    return _default_email_sender
 
 
 def get_market_data_provider() -> MarketDataProvider:

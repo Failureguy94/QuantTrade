@@ -88,3 +88,34 @@ trigger requests to the upstream provider; those must be attributable to an acco
 cannot be available to anonymous callers. Authentication is checked before the query
 string is validated, so an anonymous request learns nothing from a malformed one. The
 plain `/instruments` list reads only local reference data and stays public.
+
+## ADR-015: Deleting an account erases its data
+
+`POST /auth/delete-account` removes the user and everything they own: strategies,
+experiments, risk reports, portfolios, orders, trades and the ledger. This is paper
+data with no regulatory retention duty, and a person must be able to leave completely.
+Trades and ledger transactions are protected from accidental cascades by `RESTRICT`
+foreign keys (see the database notes), so the service deletes the rows explicitly,
+leaves first, in one transaction. The password is required again, so a stolen access
+token alone cannot destroy an account.
+
+## ADR-016: Request limits are counted in process memory
+
+Rate limits, the failed-sign-in lockout and the cap on concurrent runs are counted in
+the API process. This needs no extra infrastructure and is correct while the API runs
+as one process, the same assumption the quote cache makes (ADR-011). The cost is that
+counters reset on restart and are not shared between processes; running several API
+processes means moving them to a shared store first. The lockout counts failures per
+email address whether or not an account exists, so it cannot be used to discover which
+addresses are registered.
+
+## ADR-017: Rotating refresh tokens; the API holds no cookies
+
+Access tokens are short-lived JWTs. Sessions are continued with opaque refresh tokens,
+stored only as SHA-256 hashes, that are rotated on every use within a family. A retired
+token presented again after a short grace period (which absorbs concurrent requests
+from one client) means the token was copied, and the family is revoked. The API takes
+and returns tokens in JSON bodies and sets no cookies, so it has no CSRF surface; the
+web application keeps the refresh token in an httpOnly cookie on its own origin.
+`users.tokens_valid_after` lets a password change or sign-out-everywhere refuse access
+tokens that have not expired yet.

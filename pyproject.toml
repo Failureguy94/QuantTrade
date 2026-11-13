@@ -29,6 +29,10 @@ dev = [
   "ruff>=0.6,<1.0",
   "mypy>=1.11,<2.0",
 ]
+# Error reporting; enabled by setting SENTRY_DSN.
+sentry = [
+  "sentry-sdk>=2.0,<3.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -53,7 +57,9 @@ python_version = "3.12"
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pandas", "pandas.*", "scipy", "scipy.*", "yfinance", "yfinance.*"]
+module = [
+  "pandas", "pandas.*", "scipy", "scipy.*", "yfinance", "yfinance.*", "sentry_sdk", "sentry_sdk.*",
+]
 ignore_missing_imports = true
 
 [build-system]

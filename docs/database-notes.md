@@ -5,7 +5,8 @@ from them and reviewed by hand.
 
 ## Main domains
 
-- Identity/reference data: users, exchanges, instruments, provider_symbols.
+- Identity/reference data: users, refresh_tokens, email_tokens, exchanges, instruments,
+  provider_symbols.
 - Market data: market_data_candles.
 - Research: strategies, strategy_versions, experiments, simulation_jobs, risk_reports.
 - Portfolio/execution: portfolios, portfolio_allocations, positions, orders,
@@ -23,6 +24,7 @@ from them and reviewed by hand.
   is deleted).
 - Strategy versions: version number unique per strategy.
 - Order events and ledger transactions: sequence number unique per order / portfolio.
+- Refresh and email tokens: only a SHA-256 hash is stored, unique per table.
 - Ledger entries: non-zero amount. That the entries of a transaction sum to zero is
   enforced in `app/trading/ledger.py`, not by a constraint.
 
@@ -31,7 +33,9 @@ from them and reviewed by hand.
 Trades reference orders with `ON DELETE RESTRICT`, and ledger transactions reference
 trades the same way, so a portfolio that has traded cannot be deleted by cascade. This
 is intentional: there is no portfolio delete endpoint. Deleting an experiment keeps
-its job records and risk reports and clears their link to it.
+its job records and risk reports and clears their link to it. Deleting an account is
+the one place that removes trades and ledger rows; it deletes them explicitly, leaves
+first (ADR-015).
 
 ## Done since the initial schema
 
@@ -40,6 +44,7 @@ its job records and risk reports and clears their link to it.
    (`order_events`).
 3. Ownership checks on every user-owned resource query.
 4. Experiment results, start and completion timestamps.
+5. Sessions (rotating refresh tokens), email verification and password-reset tokens.
 
 ## Still open before production
 

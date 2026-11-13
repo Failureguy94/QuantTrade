@@ -116,4 +116,4 @@ async def test_validation_error_responses(async_client: AsyncClient):
 async def test_not_found_endpoint(async_client: AsyncClient):
     res = await async_client.get("/api/v1/non_existent_route")
     assert res.status_code == 404
-    assert res.json() == {"detail": "Not Found"}
+    assert res.json() == {"detail": "Not Found", "code": "not_found"}

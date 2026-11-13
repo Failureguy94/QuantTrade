@@ -3,6 +3,8 @@
 | Entity | Purpose |
 |---|---|
 | users | Account identity |
+| refresh_tokens | Hashed, rotating session tokens grouped into families |
+| email_tokens | Hashed single-use tokens for email verification and password reset |
 | exchanges | Exchange MIC, timezone, currency and calendar |
 | instruments | Canonical listed asset identity |
 | provider_symbols | Provider-specific ticker mapping |

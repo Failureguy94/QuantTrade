@@ -10,7 +10,9 @@ backtesting, portfolio risk and paper trading.
 - **Reference data** for multiple markets: exchanges, instruments and provider symbols.
 - **Market data**: a provider interface with a Yahoo Finance adapter, strict OHLCV
   validation, a candle store and a SHA-256 fingerprint of every dataset served.
-- **Authentication**: Argon2id password hashing and JWT bearer tokens.
+- **Accounts**: Argon2id password hashing, short-lived JWT access tokens with rotating
+  refresh tokens, email verification, password reset, lockout after repeated failed
+  sign-ins, and account deletion.
 - **Strategies**: a catalogue of built-in strategy types, with user strategies stored as
   immutable parameter versions.
 - **Backtesting**: a bar-driven engine with next-open fills, commission and slippage,
@@ -78,8 +80,9 @@ python -m app.cli seed           # load exchanges and instruments (safe to re-ru
 ```
 
 Set a real `JWT_SECRET` in `.env` before exposing the API. In production
-(`APP_ENV=production`) the application refuses to start with the default or a secret
-shorter than 32 characters.
+(`APP_ENV=production`) the application refuses to start with settings that are only
+safe locally: the default or a short `JWT_SECRET`, `DEBUG=true`, the development
+database URL, or localhost in `CORS_ORIGINS` or `FRONTEND_BASE_URL`.
 
 ## Run
 
@@ -137,18 +140,50 @@ All paths are under `/api/v1`. Health, registration, login and the plain
 endpoint, requires `Authorization: Bearer <token>`. Monetary values are exact decimal strings; statistics
 are JSON numbers.
 
+Conventions that hold for every endpoint:
+
+- **Errors** are `{"detail": ..., "code": "..."}`. `detail` is for people; `code` is
+  stable and meant for programs (`not_found`, `validation_error`, `rate_limited`,
+  `invalid_credentials`, `email_not_verified`, ...).
+- **Lists** return a JSON array and report the number of matching rows, ignoring
+  `limit` and `offset`, in the `X-Total-Count` header.
+- **Request ids**: every response has an `X-Request-ID`, which also appears on the
+  server's log lines for that request. Send your own to correlate.
+- **Limits**: sign-in and registration are limited per client address; backtests,
+  risk reports and historical data per user. A refused request is `429` with
+  `Retry-After`. Request bodies over 1 MB are `413`.
+
 ### Auth, health and reference data
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/auth/register` | Create a user (email is lower-cased; password ≥ 8 characters) |
-| POST | `/auth/login` | Exchange credentials for a JWT access token |
+| POST | `/auth/login` | Exchange credentials for an access token and a refresh token |
+| POST | `/auth/refresh` | Exchange a refresh token for a new pair (single use) |
+| POST | `/auth/logout`, `/auth/logout-all` | End one session, or every session |
 | GET | `/auth/me` | Current user |
-| GET | `/health`, `/health/database` | Service and database health |
+| POST | `/auth/verify-email`, `/auth/resend-verification` | Confirm an email address |
+| POST | `/auth/forgot-password`, `/auth/reset-password` | Reset a forgotten password |
+| POST | `/auth/change-password` | Change password (ends all other sessions) |
+| POST | `/auth/delete-account` | Permanently delete the user and all their data |
+| GET | `/health`, `/health/ready` | Liveness; readiness (includes the database) |
 | GET | `/instruments` | Active instruments |
 | GET | `/market-data/instruments` | Instruments with exchange and provider symbols |
 | GET | `/market-data/providers` | Registered providers and their capabilities |
 | GET | `/market-data/{instrument_id}/historical` | Validated OHLCV bars with a data fingerprint |
+
+**Sessions.** The access token lasts `ACCESS_TOKEN_MINUTES`. The refresh token lasts
+`REFRESH_TOKEN_DAYS` and is single-use: `/auth/refresh` returns a new pair and retires
+the token presented. A retired token presented again (after a short grace period for
+concurrent requests) is treated as stolen and ends that session. Changing or resetting
+the password, and `/auth/logout-all`, invalidate every token issued before, including
+access tokens that have not yet expired.
+
+**Email.** Registration sends a verification link, and `/auth/forgot-password` a reset
+link, pointing at `FRONTEND_BASE_URL`. With `EMAIL_BACKEND=console` (the default) the
+message is written to the log (outside production only, because the link is a
+credential); set `EMAIL_BACKEND=smtp` to send it. Sign-in requires a
+verified address only when `REQUIRE_EMAIL_VERIFICATION=true`.
 
 ### Strategies
 
@@ -265,7 +300,22 @@ Set in `.env` (see `.env.example`):
 | `JWT_SECRET` | development placeholder | Token signing key (≥ 32 characters in production) |
 | `JWT_ALGORITHM` | `HS256` | Signing algorithm |
 | `ACCESS_TOKEN_MINUTES` | `30` | Access token lifetime |
+| `REFRESH_TOKEN_DAYS` | `30` | Refresh token (session) lifetime |
 | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed browser origins |
+| `FRONTEND_BASE_URL` | `http://localhost:3000` | Where emailed links point |
+| `REQUIRE_EMAIL_VERIFICATION` | `false` | Refuse sign-in until the email is confirmed |
+| `EMAIL_BACKEND` | `console` | `console` (log) or `smtp` |
+| `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS` | | SMTP delivery |
+| `RATE_LIMIT_ENABLED` | `true` | Master switch for the limits below |
+| `RATE_LIMIT_AUTH_PER_MINUTE` | `20` | Account routes, per client address |
+| `RATE_LIMIT_BACKTESTS_PER_MINUTE` | `12` | Backtests, per user |
+| `RATE_LIMIT_RISK_PER_MINUTE` | `30` | Risk reports, per user |
+| `RATE_LIMIT_MARKET_DATA_PER_MINUTE` | `60` | Historical data requests, per user |
+| `LOGIN_MAX_FAILURES`, `LOGIN_LOCKOUT_MINUTES` | `5`, `15` | Failed sign-ins per email before a lockout |
+| `MAX_CONCURRENT_RUNS_PER_USER` | `2` | Backtests and risk reports in flight per user |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` | Largest accepted request body |
+| `LOG_FORMAT`, `LOG_LEVEL` | by environment, `INFO` | `text` or `json` (default in production) |
+| `SENTRY_DSN` | | Error reporting (needs `pip install '.[sentry]'`) |
 | `PAPER_COMMISSION_BPS` | `5` | Paper commission, basis points of notional |
 | `PAPER_SLIPPAGE_BPS` | `2` | Paper slippage, basis points of price |
 | `QUOTE_CACHE_TTL_SECONDS` | `60` | How long a reference quote is reused |
@@ -304,9 +354,10 @@ to the migration by hand.
 
 ```
 app/
-  api/            HTTP layer: dependencies, error mapping, v1 endpoints
+  api/            HTTP layer: dependencies, limits, middleware, error mapping, v1 endpoints
+  auth/           accounts, sessions and emailed links
   backtesting/    strategy catalogue, engine, metrics, experiment service
-  core/           settings, security, domain errors, decimal helpers
+  core/           settings, security, rate limits, email, logging, errors, decimal helpers
   db/             engine, session, declarative base
   market_data/    provider interface, Yahoo adapter, validator, calendars, repository
   models/         SQLAlchemy models (the schema source of truth)

@@ -6,8 +6,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.deps import get_market_data_provider
+from app.api.deps import get_email_sender, get_market_data_provider
 from app.core.config import settings
+from app.core.email import Email
+from app.core.ratelimit import limiter, run_slots
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
@@ -100,6 +102,29 @@ async def async_client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, 
 # Shared helpers for the strategy / backtest / trading / risk suites
 # ---------------------------------------------------------------------------
 
+
+
+@pytest.fixture(autouse=True)
+def _reset_limits():
+    """Rate-limit counters are process-wide; every test starts with none used."""
+    limiter.reset()
+    run_slots.reset()
+    yield
+    limiter.reset()
+    run_slots.reset()
+
+
+@pytest.fixture
+def sent_emails(async_client: AsyncClient) -> list[Email]:
+    """Capture outgoing email instead of logging it."""
+    outbox: list[Email] = []
+
+    class _Outbox:
+        async def send(self, email: Email) -> None:
+            outbox.append(email)
+
+    fastapi_app.dependency_overrides[get_email_sender] = lambda: _Outbox()
+    return outbox
 
 
 @pytest.fixture(autouse=True)

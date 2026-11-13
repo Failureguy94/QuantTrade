@@ -7,8 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_market_data_service
+from app.api.limits import backtest_rate_limit
+from app.api.pagination import set_total_count
 from app.backtesting.service import BacktestService
+from app.core.config import settings
 from app.core.errors import NotFoundError
+from app.core.ratelimit import run_slots
 from app.db.session import get_db
 from app.market_data.service import MarketDataService
 from app.models.identity import User
@@ -50,7 +54,12 @@ def _detail(experiment: Experiment) -> ExperimentRead:
     return detail
 
 
-@router.post("/backtests", response_model=ExperimentRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/backtests",
+    response_model=ExperimentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(backtest_rate_limit)],
+)
 async def run_backtest(
     payload: BacktestRequest,
     current_user: User = Depends(get_current_user),
@@ -63,13 +72,17 @@ async def run_backtest(
     ``status`` — ``COMPLETED`` carries ``results``, ``FAILED`` carries
     ``error_message`` (for example when the provider returned no data).
     """
-    experiment = await BacktestService(db, market_data).run_backtest(current_user.id, payload)
-    await db.commit()
+    async with run_slots.slot(f"runs:{current_user.id}", settings.max_concurrent_runs_per_user):
+        experiment = await BacktestService(db, market_data).run_backtest(
+            current_user.id, payload
+        )
+        await db.commit()
     return _detail(experiment)
 
 
 @router.get("", response_model=list[ExperimentSummary])
 async def list_experiments(
+    response: Response,
     status_filter: str | None = Query(default=None, alias="status"),
     strategy_version_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -89,6 +102,7 @@ async def list_experiments(
         stmt = stmt.where(Experiment.status == status_filter.upper())
     if strategy_version_id:
         stmt = stmt.where(Experiment.strategy_version_id == strategy_version_id)
+    await set_total_count(response, db, stmt)
     return [_summary(experiment) for experiment in (await db.execute(stmt)).scalars()]
 
 

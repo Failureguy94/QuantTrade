@@ -1,4 +1,11 @@
-from app.models.identity import Exchange, Instrument, ProviderSymbol, User
+from app.models.identity import (
+    EmailToken,
+    Exchange,
+    Instrument,
+    ProviderSymbol,
+    RefreshToken,
+    User,
+)
 from app.models.market_data import MarketDataCandle
 from app.models.portfolio import (
     EquitySnapshot,
@@ -15,6 +22,8 @@ from app.models.research import Experiment, RiskReport, SimulationJob, Strategy,
 
 __all__ = [
     "User",
+    "RefreshToken",
+    "EmailToken",
     "Exchange",
     "Instrument",
     "ProviderSymbol",

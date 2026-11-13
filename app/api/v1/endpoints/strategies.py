@@ -2,11 +2,12 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.pagination import set_total_count
 from app.backtesting.engine import ENGINE_VERSION
 from app.backtesting.strategies import (
     STRATEGY_REGISTRY,
@@ -123,6 +124,7 @@ async def create_strategy(
 
 @router.get("", response_model=list[StrategyRead])
 async def list_strategies(
+    response: Response,
     include_archived: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -138,6 +140,7 @@ async def list_strategies(
     )
     if not include_archived:
         stmt = stmt.where(Strategy.is_archived.is_(False))
+    await set_total_count(response, db, stmt)
     strategies = (await db.execute(stmt)).scalars().all()
     latest = await _latest_versions(db, [strategy.id for strategy in strategies])
     return [_to_read(strategy, latest.get(strategy.id)) for strategy in strategies]
