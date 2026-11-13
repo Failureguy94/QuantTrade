@@ -1,10 +1,11 @@
+import json
 from decimal import Decimal
 from functools import lru_cache
-from typing import Self
+from typing import Annotated, Self
 from urllib.parse import urlsplit
 
-from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import ValidationError, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_JWT_SECRET = "development-only-change-me"
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://quant:quant@localhost:5433/quant"
@@ -26,7 +27,8 @@ class Settings(BaseSettings):
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 30
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # A JSON list or a comma-separated string of origins.
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
     # Paper-trading fill model. Basis points of traded notional.
     paper_commission_bps: Decimal = Decimal("5")
@@ -93,7 +95,9 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, value):
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            if value.strip().startswith("["):
+                return json.loads(value)
+            return [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
         return value
 
     @field_validator("database_url")
@@ -155,9 +159,23 @@ class Settings(BaseSettings):
         return self
 
 
+def describe_errors(error: ValidationError) -> str:
+    """The problems in a settings error, without the values (which include secrets)."""
+    return "; ".join(
+        f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+        if item["loc"]
+        else item["msg"]
+        for item in error.errors(include_input=False, include_url=False)
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as error:
+        # Pydantic's own message echoes the input, and the input contains secrets.
+        raise SystemExit(f"Invalid configuration: {describe_errors(error)}") from None
 
 
 settings = get_settings()

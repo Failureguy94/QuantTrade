@@ -1,0 +1,45 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+#
+# Creates the API (from the Dockerfile) and a PostgreSQL database. In the Render
+# dashboard choose New > Blueprint, pick this repository, and enter the two values it
+# asks for (the address of the web application).
+#
+# The free plans are enough to try it: the free web service sleeps when idle and the
+# free database expires after 30 days. Change both `plan` values for real use.
+
+databases:
+  - name: quanttrade-db
+    databaseName: quant
+    user: quant
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: quanttrade-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health/ready
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: quanttrade-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      # Apply migrations and load reference data when the container starts.
+      - key: RUN_MIGRATIONS
+        value: "true"
+      # Requests arrive through Render's proxy; trust its forwarded client address.
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+      # The public address of the web application, e.g. https://quanttrade.vercel.app
+      # (several origins may be separated by commas).
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false

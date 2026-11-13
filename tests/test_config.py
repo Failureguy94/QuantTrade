@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import DEFAULT_DATABASE_URL, Settings
+from app.core.config import DEFAULT_DATABASE_URL, Settings, describe_errors, get_settings
 
 SAFE_PRODUCTION = {
     "app_env": "production",
@@ -99,3 +99,42 @@ def test_plain_postgres_urls_select_the_async_driver(url):
 def test_cors_origins_accept_a_comma_separated_string():
     settings = build(cors_origins="https://a.example.com, https://b.example.com")
     assert settings.cors_origins == ["https://a.example.com", "https://b.example.com"]
+
+
+def test_cors_origins_from_the_environment(monkeypatch):
+    """Hosting dashboards make a plain comma-separated value the natural thing to type."""
+    monkeypatch.setenv("CORS_ORIGINS", "https://a.example.com/,https://b.example.com")
+    settings = Settings(_env_file=None, **{k: v for k, v in SAFE_PRODUCTION.items()
+                                           if k != "cors_origins"})
+    assert settings.cors_origins == ["https://a.example.com", "https://b.example.com"]
+
+    monkeypatch.setenv("CORS_ORIGINS", '["https://c.example.com"]')
+    settings = Settings(_env_file=None, **{k: v for k, v in SAFE_PRODUCTION.items()
+                                           if k != "cors_origins"})
+    assert settings.cors_origins == ["https://c.example.com"]
+
+
+def test_configuration_errors_are_reported_without_secret_values(monkeypatch):
+    secret = "s3cr3t-" * 6
+    with pytest.raises(ValidationError) as caught:
+        build(jwt_secret=secret, debug=True, smtp_password="hunter2-hunter2")
+    assert secret[:12] in str(caught.value)  # what pydantic would print by default
+    described = describe_errors(caught.value)
+    assert "DEBUG must be false" in described
+    assert "s3cr3t" not in described and "hunter2" not in described
+
+
+def test_startup_exits_with_a_clean_message_on_bad_configuration(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("JWT_SECRET", "p" * 40)
+    monkeypatch.setenv("DEBUG", "true")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(SystemExit) as caught:
+            get_settings()
+    finally:
+        get_settings.cache_clear()
+    message = str(caught.value)
+    assert message.startswith("Invalid configuration:")
+    assert "DEBUG must be false" in message
+    assert "pppp" not in message
