@@ -118,7 +118,7 @@ def test_configuration_errors_are_reported_without_secret_values(monkeypatch):
     secret = "s3cr3t-" * 6
     with pytest.raises(ValidationError) as caught:
         build(jwt_secret=secret, debug=True, smtp_password="hunter2-hunter2")
-    assert secret[:12] in str(caught.value)  # what pydantic would print by default
+    assert "hunter2" in str(caught.value)  # pydantic's own message echoes input values
     described = describe_errors(caught.value)
     assert "DEBUG must be false" in described
     assert "s3cr3t" not in described and "hunter2" not in described
