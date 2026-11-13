@@ -6,11 +6,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.email import EmailSender, build_email_sender
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.market_data.base import MarketDataProvider
 from app.market_data.service import MarketDataService
+from app.market_data.synthetic import SyntheticProvider
 from app.market_data.yahoo import YahooFinanceProvider
 from app.models.identity import User
 from app.trading.quotes import QuoteService
@@ -112,7 +114,9 @@ async def require_authenticated_user(
     return current_user
 
 
-_default_provider = YahooFinanceProvider()
+_default_provider: MarketDataProvider = (
+    SyntheticProvider() if settings.market_data_provider == "synthetic" else YahooFinanceProvider()
+)
 _default_email_sender = build_email_sender()
 
 

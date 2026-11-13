@@ -29,7 +29,12 @@ class BacktestRequest(BaseModel):
     allow_short: bool = False
     fractional_shares: bool = False
     risk_free_rate: float = Field(default=0.0, ge=-1.0, le=1.0, description="Annual rate")
-    provider: str = Field(default="YAHOO", min_length=1, max_length=64)
+    provider: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Market data provider. Defaults to the one the server is configured with.",
+    )
 
     @model_validator(mode="after")
     def start_before_end(self) -> "BacktestRequest":

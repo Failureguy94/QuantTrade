@@ -131,3 +131,15 @@ timeout rather than retried, so a job that crashes its worker cannot do so forev
 the user can run it again. The same worker re-prices resting limit orders on an
 interval, one portfolio per transaction, under the portfolio row lock that already
 serialises order handling (ADR-010).
+
+## ADR-019: A synthetic provider for development and tests
+
+`MARKET_DATA_PROVIDER=synthetic` replaces Yahoo Finance with prices generated from a
+seeded random walk per symbol. A given symbol and day always has the same bar, so
+demos and browser tests are fast, offline and repeatable, while the data still goes
+through the same validation, storage and execution code as real data. Bars are
+labelled `SYNTHETIC` in the candle store and in results, and production refuses to
+start with this provider, so made-up prices cannot be mistaken for market data. A
+request that does not name a provider uses the configured one; naming a provider that
+is not configured is an error. One database should not be switched between providers,
+because the candle store keeps one bar per instrument, interval and day.

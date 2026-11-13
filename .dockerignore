@@ -18,3 +18,5 @@ build
 *.egg-info
 tests
 docs
+web
+scripts

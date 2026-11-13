@@ -46,14 +46,17 @@ class MarketDataService:
         self.db = db
         self.repository = SQLMarketDataRepository(db)
         self._providers: dict[str, MarketDataProvider] = {}
-        # Register default Yahoo provider
+        # The provider used when a request does not name one.
         default_provider = provider or YahooFinanceProvider()
+        self.default_provider_name = default_provider.name.upper()
         self.register_provider(default_provider)
 
     def register_provider(self, provider: MarketDataProvider) -> None:
         self._providers[provider.name.upper()] = provider
 
-    def get_provider(self, name: str = "YAHOO") -> MarketDataProvider:
+    def get_provider(self, name: str | None = None) -> MarketDataProvider:
+        """The named provider, or the configured default when no name is given."""
+        name = name or self.default_provider_name
         provider = self._providers.get(name.upper())
         if not provider:
             registered = list(self._providers.keys())
@@ -110,7 +113,7 @@ class MarketDataService:
         adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.SPLIT_AND_DIVIDEND,
         start: datetime | None = None,
         end: datetime | None = None,
-        provider_name: str = "YAHOO",
+        provider_name: str | None = None,
         force_fetch: bool = False,
         limit: int = 1000,
     ) -> tuple[Instrument, list[OHLCVRecord], str, list[str]]:
@@ -218,7 +221,7 @@ class MarketDataService:
         end: datetime,
         interval: str = "1d",
         adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.SPLIT_AND_DIVIDEND,
-        provider_name: str = "YAHOO",
+        provider_name: str | None = None,
         limit: int = 1000,
     ) -> tuple[Instrument, list[OHLCVRecord], str, list[str]]:
         """Historical bars that are checked to span ``start``..``end``.

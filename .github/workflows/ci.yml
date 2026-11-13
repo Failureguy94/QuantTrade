@@ -62,13 +62,61 @@ jobs:
       - name: Tests
         run: pytest
 
-  docker:
-    name: Docker image and compose stack
+      - name: OpenAPI document the web app is generated from is current
+        run: python scripts/export_openapi.py --check
+
+  web:
+    name: Web lint, types, unit tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
 
     steps:
       - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generated API types match the OpenAPI document
+        run: |
+          pnpm gen:api
+          git diff --exit-code -- src/lib/api/schema.d.ts
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  docker:
+    name: Docker stack and browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Made-up but repeatable prices, so the browser tests call no outside service.
+      - name: Configure the stack for tests
+        run: printf 'MARKET_DATA_PROVIDER=synthetic\nRATE_LIMIT_AUTH_PER_MINUTE=1000\n' > .env
 
       - name: Build and start the stack
         run: docker compose up -d --build
@@ -90,6 +138,40 @@ jobs:
             http://localhost:8000/api/v1/market-data/instruments)
           echo "anonymous status: $status"
           test "$status" = "401"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install and build the web app
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Install the test browser
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser tests
+        working-directory: web
+        env:
+          API_BASE_URL: http://localhost:8000
+        run: pnpm e2e
+
+      - name: Keep the traces of failed browser tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: web/test-results
+          retention-days: 7
 
       - name: Logs
         if: failure()

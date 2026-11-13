@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_market_data_service
 from app.api.errors import market_data_http_exception
 from app.api.limits import market_data_rate_limit
 from app.api.pagination import set_total_count
@@ -81,10 +81,9 @@ async def list_market_data_instruments(
 
 @router.get("/providers", response_model=list[ProviderSummary])
 async def list_market_data_providers(
-    db: AsyncSession = Depends(get_db),
+    service: MarketDataService = Depends(get_market_data_service),
 ):
     """Report registered market data providers, supported intervals, and capabilities."""
-    service = MarketDataService(db=db)
     capabilities = service.list_providers()
     return [
         ProviderSummary(
@@ -116,13 +115,16 @@ async def get_historical_market_data(
         default=True,
         description="Whether prices are adjusted for splits and dividends",
     ),
-    provider: str = Query(default="YAHOO", description="Upstream market data provider"),
+    provider: str | None = Query(
+        default=None, description="Market data provider. Defaults to the configured one."
+    ),
     force_refresh: bool = Query(
         default=False,
         description="Bypass local cache and re-fetch from upstream",
     ),
     limit: int = Query(default=1000, ge=1, le=5000, description="Max bars to return"),
     db: AsyncSession = Depends(get_db),
+    service: MarketDataService = Depends(get_market_data_service),
 ):
     """
     Fetch historical OHLCV data for an instrument with strict validation
@@ -131,8 +133,6 @@ async def get_historical_market_data(
     adjustment_mode = (
         PriceAdjustmentMode.SPLIT_AND_DIVIDEND if adjusted else PriceAdjustmentMode.RAW
     )
-    service = MarketDataService(db=db)
-
     try:
         instrument, records, fingerprint, warnings = await service.get_historical_market_data(
             instrument_id=instrument_id,

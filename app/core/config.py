@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # A JSON list or a comma-separated string of origins.
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
+    # Where prices come from: "yahoo", or "synthetic" for made-up but repeatable
+    # prices (development, demos and automated tests only).
+    market_data_provider: str = "yahoo"
+
     # Paper-trading fill model. Basis points of traded notional.
     paper_commission_bps: Decimal = Decimal("5")
     paper_slippage_bps: Decimal = Decimal("2")
@@ -122,6 +126,14 @@ class Settings(BaseSettings):
                 )
         return value
 
+    @field_validator("market_data_provider")
+    @classmethod
+    def known_market_data_provider(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"yahoo", "synthetic"}:
+            raise ValueError("MARKET_DATA_PROVIDER must be 'yahoo' or 'synthetic'")
+        return value
+
     @field_validator("email_backend")
     @classmethod
     def known_email_backend(cls, value: str) -> str:
@@ -141,6 +153,8 @@ class Settings(BaseSettings):
         problems: list[str] = []
         if self.debug:
             problems.append("DEBUG must be false")
+        if self.market_data_provider == "synthetic":
+            problems.append("MARKET_DATA_PROVIDER=synthetic serves made-up prices")
         if self.database_url == DEFAULT_DATABASE_URL:
             problems.append("DATABASE_URL must not be the development default")
         for origin in self.cors_origins:
