@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     "Research trading strategies, backtest them on historical data, paper trade and measure risk.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
